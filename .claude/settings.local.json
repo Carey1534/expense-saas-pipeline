@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep:*)",
+      "Bash(npx next build:*)",
+      "Bash(npx tsc:*)",
+      "Bash(dir:*)",
+      "Bash(npm run dev:*)"
+    ]
+  }
+}
