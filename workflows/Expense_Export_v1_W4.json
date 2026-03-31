@@ -1,0 +1,263 @@
+{
+  "name": "Expense_Export_v1_W4",
+  "nodes": [
+    {
+      "parameters": {
+        "jsCode": "function csvEscape(v) {\n  if (v === null || v === undefined) return '';\n  const s = String(v);\n  if (/[\",\\n]/.test(s)) return `\"${s.replace(/\"/g,'\"\"')}\"`;\n  return s;\n}\n\nconst rows = $input.all().map(i => i.json);\n\nconst headers = [\n  'expense_date','vendor_name','total_amount','tax_amount','currency','project_code','document_id'\n];\n\nlet csv = headers.join(',') + '\\n';\nfor (const r of rows) {\n  // Line 16 in your code\ncsv += headers.map(h => {\n  const val = csvEscape(r[h]);\n  // Format date if it's the expense_date field\n  if (h === 'expense_date' && val) {\n    return val.split('T')[0]; // Returns just 2026-02-01\n  }\n  return val;\n}).join(',') + '\\n';\n}\n\nreturn [{\n  filename: `expenses_export_${new Date().toISOString().split('T')[0]}.csv`\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        400,
+        32
+      ],
+      "id": "57087b4a-1803-4382-8521-35fac64f996b",
+      "name": "Convert to CSV"
+    },
+    {
+      "parameters": {
+        "binaryPropertyName": "csv",
+        "options": {
+          "fileName": "={{`expenses_${$json.query.org_id}_${$now.toISO().slice(0,10)}.csv`}}\n"
+        }
+      },
+      "type": "n8n-nodes-base.convertToFile",
+      "typeVersion": 1.1,
+      "position": [
+        624,
+        32
+      ],
+      "id": "6b6ff0ee-fe2d-4fcc-a178-0422ac0b303d",
+      "name": "Move Binary Data"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n     \"success\": true,\n     \"message\": \"Export completed\",\n     \"org_id\": \"{{ $json.org_id }}\"\n   }",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        1296,
+        32
+      ],
+      "id": "bc54fec8-10f4-4045-a1d8-b2b8886f52d3",
+      "name": "Respond to Webhook"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "expense_docs/export",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -48,
+        32
+      ],
+      "id": "d02ad333-bfc9-43da-a3b1-a694b5cb6eb5",
+      "name": "Expense exporting webhook",
+      "webhookId": "e6767514-832e-4623-8066-6e6f63416c9c"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select\n  er.id as expense_record_id,\n  er.org_id,\n  er.document_id,\n  er.vendor_name,\n  er.expense_date,\n  er.total_amount,\n  er.tax_amount,\n  er.currency,\n  er.confidence_score,\n  er.needs_review,\n  er.status,\n  er.created_at,\n  er.updated_at\nfrom public.tc_expense_records er\nwhere er.org_id = $1\n  and er.status = 'APPROVED'\norder by er.expense_date desc nulls last, er.created_at desc;\n",
+        "options": {
+          "queryReplacement": "={{ $json.body.context.org_id }}\n"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        176,
+        32
+      ],
+      "id": "b1c5e78d-d6f8-43fb-8d2e-684caac09e90",
+      "name": "Pull approved expenses from tc_expense_records",
+      "alwaysOutputData": true,
+      "credentials": {
+        "postgres": {
+          "id": "cqBasy3ZTP80O0WH",
+          "name": "TC Contracting SupaB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "upload",
+        "bucketName": "tccontracting-documents-prod",
+        "fileName": "={{ `org_${$('Pull approved expenses from tc_expense_records').first().json.org_id}/exports/expenses/${new Date().toISOString().slice(0,10)}/expenses_export_${new Date().toISOString().slice(0,10)}.csv` }}\n",
+        "binaryPropertyName": "csv",
+        "additionalFields": {}
+      },
+      "type": "n8n-nodes-base.awsS3",
+      "typeVersion": 2,
+      "position": [
+        848,
+        32
+      ],
+      "id": "e4cfe97b-8db2-4e37-b067-8bcac9412a1c",
+      "name": "Upload file to tccontracting-documents-prod S3",
+      "credentials": {
+        "aws": {
+          "id": "pmz4eBQxmqHclGMT",
+          "name": "AWS (IAM) account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "insert into public.tc_audit_events\n(org_id, actor, entity_type, entity_id, action, before_state, after_state)\nvalues\n($1, 'system', 'export', gen_random_uuid(), 'EXPORT_CREATED', null, $2::jsonb);",
+        "options": {
+          "queryReplacement": "={{ $('Pull approved expenses from tc_expense_records').item.json.org_id }}, \n{{\n  JSON.stringify({\n    s3_bucket: $node[\"Upload file to tccontracting-documents-prod S3\"].json.Bucket,\n    s3_key: $node[\"Upload file to tccontracting-documents-prod S3\"].json.Key,\n    row_count: $items(\"Pull approved expenses from tc_expense_records\").length,\n    exported_at: new Date().toISOString()\n  })\n}}\n"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1072,
+        32
+      ],
+      "id": "d437c128-086d-4260-a9ef-b6af75647c1f",
+      "name": "Insert into tc_audit_events ",
+      "credentials": {
+        "postgres": {
+          "id": "cqBasy3ZTP80O0WH",
+          "name": "TC Contracting SupaB"
+        }
+      }
+    }
+  ],
+  "pinData": {
+    "Expense exporting webhook": [
+      {
+        "json": {
+          "headers": {
+            "host": "connorcareyai.app.n8n.cloud",
+            "user-agent": "node",
+            "content-length": "61",
+            "accept": "*/*",
+            "accept-encoding": "gzip, br",
+            "accept-language": "*",
+            "cdn-loop": "cloudflare; loops=1; subreqs=1",
+            "cf-connecting-ip": "2600:1011:b112:c0c3:f934:8e9b:a1d0:9c89",
+            "cf-ew-via": "15",
+            "cf-ipcountry": "US",
+            "cf-ray": "9cae491a23280fd1-LAX",
+            "cf-visitor": "{\"scheme\":\"https\"}",
+            "cf-worker": "n8n.cloud",
+            "content-type": "application/json",
+            "sec-fetch-mode": "cors",
+            "x-forwarded-for": "2600:1011:b112:c0c3:f934:8e9b:a1d0:9c89, 172.70.210.148",
+            "x-forwarded-host": "connorcareyai.app.n8n.cloud",
+            "x-forwarded-port": "443",
+            "x-forwarded-proto": "https",
+            "x-forwarded-server": "traefik-prod-users-gwc-14-5654dfbc89-pkd5r",
+            "x-is-trusted": "yes",
+            "x-real-ip": "2600:1011:b112:c0c3:f934:8e9b:a1d0:9c89"
+          },
+          "params": {},
+          "query": {},
+          "body": {
+            "context": {
+              "org_id": "11111111-1111-1111-1111-111111111111"
+            }
+          },
+          "webhookUrl": "https://connorcareyai.app.n8n.cloud/webhook/expense_docs/export",
+          "executionMode": "production"
+        },
+        "pairedItem": {
+          "item": 0
+        }
+      }
+    ]
+  },
+  "connections": {
+    "Convert to CSV": {
+      "main": [
+        [
+          {
+            "node": "Move Binary Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Move Binary Data": {
+      "main": [
+        [
+          {
+            "node": "Upload file to tccontracting-documents-prod S3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Expense exporting webhook": {
+      "main": [
+        [
+          {
+            "node": "Pull approved expenses from tc_expense_records",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pull approved expenses from tc_expense_records": {
+      "main": [
+        [
+          {
+            "node": "Convert to CSV",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upload file to tccontracting-documents-prod S3": {
+      "main": [
+        [
+          {
+            "node": "Insert into tc_audit_events ",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert into tc_audit_events ": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "33b46028-1458-4141-8291-b371e79a4a7f",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "91c7bbe549e6b1ce176a6cba870e18b1a9397b8b96abba762c4236f7d060db36"
+  },
+  "id": "2NI4P8AG2xn6WRin48sq6",
+  "tags": []
+}

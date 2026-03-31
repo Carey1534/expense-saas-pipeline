@@ -1,0 +1,453 @@
+{
+  "name": "Expense_Extract_v1_W3",
+  "nodes": [
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "list",
+          "value": "gpt-4.1-mini"
+        },
+        "builtInTools": {},
+        "options": {
+          "maxTokens": 100,
+          "temperature": 0,
+          "topP": 1
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.3,
+      "position": [
+        1024,
+        48
+      ],
+      "id": "b8d023b0-7042-483f-aed2-16da2184f0cc",
+      "name": "OpenAI Chat Model",
+      "credentials": {
+        "openAiApi": {
+          "id": "9vIbPmQwDbW4cNZ9",
+          "name": "OpenAi account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "function isISODate(s) {\n  return typeof s === 'string' && /^\\d{4}-\\d{2}-\\d{2}$/.test(s);\n}\n\n// Get the input data\nlet rawData = $input.item.json;\n\n// Extract the actual data - the output is a JSON string that needs parsing\nlet data;\nif (rawData.output && typeof rawData.output === 'string') {\n  // Parse the JSON string\n  data = JSON.parse(rawData.output);\n} else if (rawData.output && typeof rawData.output === 'object') {\n  data = rawData.output;\n} else if (rawData.vendor_name !== undefined) {\n  data = rawData;\n} else {\n  throw new Error('Could not find data in expected format');\n}\n\n// Extract only the fields we need - ignore any extra keys\nconst vendor_name = data.vendor_name ?? null;\nconst expense_date = data.expense_date ?? null;\nconst total_amount = (data.total_amount === null || data.total_amount === undefined) ? null : Number(data.total_amount);\nconst tax_amount = (data.tax_amount === null || data.tax_amount === undefined) ? null : Number(data.tax_amount);\nconst currency = data.currency ?? 'USD';\n\n// Check that required fields exist\nconst required = ['vendor_name', 'expense_date', 'total_amount', 'tax_amount', 'currency'];\nfor (const field of required) {\n  if (!(field in data)) throw new Error(`Missing required field: ${field}`);\n}\n\n// Basic validation\nif (expense_date !== null && !isISODate(expense_date)) throw new Error('expense_date not ISO YYYY-MM-DD');\nif (total_amount !== null && !Number.isFinite(total_amount)) throw new Error('total_amount not a number');\nif (tax_amount !== null && !Number.isFinite(tax_amount)) throw new Error('tax_amount not a number');\n\nreturn { vendor_name, expense_date, total_amount, tax_amount, currency };"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1296,
+        -176
+      ],
+      "id": "2fc57309-bce1-4da8-8ea0-dedc469b0b15",
+      "name": "Validate Extracted JSON"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Try to get OCR confidence from the workflow trigger or use a default\nconst ocr_conf = 0.75; // Default confidence if not available from previous node\n\nconst required = ['vendor_name','expense_date','total_amount'];\nlet present = 0;\nfor (const k of required) {\n  if ($json[k] !== null && $json[k] !== undefined && $json[k] !== '') present++;\n}\n\nconst field_completeness = present / required.length;\nconst confidence_score = (ocr_conf * 0.4) + (field_completeness * 0.6);\n\n// Gate\nconst needs_review = confidence_score < 0.85 || present < required.length;\n\nreturn [{\n  ...$json,\n  confidence_score,\n  needs_review\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1520,
+        -176
+      ],
+      "id": "a95cd271-4d10-4f4b-a5c7-87be45ce33b3",
+      "name": "Score Confidence"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "insert into public.tc_audit_events\n(org_id, actor, entity_type, entity_id, action, before_state, after_state)\nvalues\n($1, 'system', 'expense_record', $2, 'CREATED_OR_UPDATED', null, $3::jsonb);\n",
+        "options": {
+          "queryReplacement": "={{ $('Load Latest OCR Result').item.json.org_id }}, \n{{ $json.id }}, \n{{JSON.stringify($node[\"Score Confidence\"].json)}}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        2192,
+        -176
+      ],
+      "id": "af078b3c-c895-4a33-b89e-8f1de515c0c2",
+      "name": "Insert audit event (system)",
+      "credentials": {
+        "postgres": {
+          "id": "cqBasy3ZTP80O0WH",
+          "name": "TC Contracting SupaB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "raw",
+        "jsonOutput": "={\n  \"ok\": true,\n  \"expense_record_id\": \"{{ $('Insert Expense into tc_expense_record').item.json.id }}\",\n  \"needs_review\": \"{{$node['Score Confidence'].json.needs_review}}\",\n  \"confidence_score\": {{$node['Score Confidence'].json.confidence_score}}\n}\n",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        2416,
+        -176
+      ],
+      "id": "cb1a3fce-750e-4e7a-b2e5-f27db5564d68",
+      "name": "Return Data"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Allow short or missing raw_text since we're using structured OCR\nif ($json.raw_text && $json.raw_text.length < 10) {\n  throw new Error(\"RAW_TEXT_TOO_SHORT\");\n}\n\nif (!$json.org_id || !$json.document_id) {\n  throw new Error(\"MISSING_CONTEXT\");\n}\n\nconst ocr_conf = Number($json.ocr_confidence ?? 0.95);\nif (Number.isNaN(ocr_conf)) {\n  throw new Error(\"OCR_CONFIDENCE_NOT_NUMERIC\");\n}\n\nreturn {\n  ...$json,\n  ocr_confidence: ocr_conf,\n  raw_text: $json.raw_text || JSON.stringify($json.textract_response || {})\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        720,
+        -176
+      ],
+      "id": "285625bd-8d75-4316-9daf-4aa0de53fd36",
+      "name": "Verify Values"
+    },
+    {
+      "parameters": {
+        "jsCode": "function numOrNull(v) {\n  if (v === null || v === undefined || v === '' || v === 'null') {\n    return null;\n  }\n  const n = Number(v);\n  return Number.isFinite(n) ? n : null;\n}\n\nfunction dateOrNull(v) {\n  if (!v) return null;\n\n  const s = String(v).replace(/\\s+/g, ' ').trim();\n\n  // Remove time portion (DATE column does not need it)\n  const datePart = s.split(' ')[0];\n\n  const m = datePart.match(/^(\\d{1,2})\\/(\\d{1,2})\\/(\\d{4})$/);\n  if (!m) return null;\n\n  let a = parseInt(m[1], 10);\n  let b = parseInt(m[2], 10);\n  const year = parseInt(m[3], 10);\n\n  let day, month;\n\n  // Disambiguation\n  if (a > 12 && b <= 12) {\n    day = a;\n    month = b;\n  } else if (b > 12 && a <= 12) {\n    month = a;\n    day = b;\n  } else {\n    // Ambiguous (both <= 12)\n    // Default to US MM/DD — change if needed\n    month = a;\n    day = b;\n  }\n\n  if (month < 1 || month > 12) return null;\n  if (day < 1 || day > 31) return null;\n\n  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;\n}\n\nconst ctx = $('When Executed by \"Doc_OCR_Pipeline_v1_W2\"').first().json;\n\nconst normalizedDate = dateOrNull($json.expense_date);\nconst normalizedTotal = numOrNull($json.total_amount);\nconst normalizedTax = numOrNull($json.tax_amount);\n\n// Auto-force review if critical fields fail validation\nconst autoNeedsReview =\n  !normalizedDate ||\n  normalizedTotal === null ||\n  normalizedTotal <= 0;\n\nreturn [{\n  json: {\n    org_id: ctx.context.org_id ?? null,\n    document_id: ctx.document.document_id ?? null,\n    project_id: ctx.context.project_id ?? null,\n    client_id: ctx.context.client_id ?? null,\n\n    vendor_name: $json.vendor_name ?? null,\n\n    // ISO-safe date for Postgres DATE column\n    expense_date: normalizedDate,\n\n    // Preserve raw value for debugging/audit\n    expense_date_raw: $json.expense_date ?? null,\n\n    total_amount: normalizedTotal,\n    tax_amount: normalizedTax,\n\n    currency: $json.currency ?? 'USD',\n\n    confidence_score: numOrNull($json.confidence_score),\n\n    needs_review: autoNeedsReview\n      ? true\n      : ($json.needs_review ?? false)\n  }\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1744,
+        -176
+      ],
+      "id": "3d072a02-8103-431c-99db-a3ef486876ac",
+      "name": "Normalize Expense Values"
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "tableId": "tc_expense_records",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "document_id",
+              "condition": "eq",
+              "keyValue": "={{$node[\"Normalize Expense Values\"].json.document_id.trim()}}"
+            }
+          ]
+        },
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "org_id",
+              "fieldValue": "={{ $json.org_id }}"
+            },
+            {
+              "fieldId": "document_id",
+              "fieldValue": "={{ $json.document_id }}"
+            },
+            {
+              "fieldId": "project_id",
+              "fieldValue": "={{ $json.project_id }}"
+            },
+            {
+              "fieldId": "client_id",
+              "fieldValue": "={{ $json.client_id }}"
+            },
+            {
+              "fieldId": "vendor_name",
+              "fieldValue": "={{ $json.vendor_name }}"
+            },
+            {
+              "fieldId": "expense_date",
+              "fieldValue": "={{ $json.expense_date }}"
+            },
+            {
+              "fieldId": "total_amount",
+              "fieldValue": "={{ $json.total_amount }}"
+            },
+            {
+              "fieldId": "tax_amount",
+              "fieldValue": "={{ $json.tax_amount }}"
+            },
+            {
+              "fieldId": "currency",
+              "fieldValue": "={{ $json.currency }}"
+            },
+            {
+              "fieldId": "confidence_score",
+              "fieldValue": "={{ $json.confidence_score }}"
+            },
+            {
+              "fieldId": "needs_review",
+              "fieldValue": "={{ $json.needs_review }}"
+            },
+            {
+              "fieldId": "status",
+              "fieldValue": "DRAFT"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        1968,
+        -176
+      ],
+      "id": "a6f84446-69c7-4a53-b3c3-9420a5aa6051",
+      "name": "Insert Expense into tc_expense_record",
+      "alwaysOutputData": true,
+      "credentials": {
+        "supabaseApi": {
+          "id": "UWqoRgAJxv25gOhE",
+          "name": "Supabase - tccontracting"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        48,
+        -176
+      ],
+      "id": "31981830-bb78-42e7-a8cd-3338815526a4",
+      "name": "When Executed by \"Doc_OCR_Pipeline_v1_W2\""
+    },
+    {
+      "parameters": {
+        "jsCode": "const required = [\n  'context.org_id',\n  'context.document_id',\n  'document.file_path',  // Changed: This is what we need to download from S3\n];\n\nfor (const path of required) {\n  const value = path.split('.').reduce((o, k) => o?.[k], $json);\n  if (value === undefined || value === null || value === '') {\n    throw new Error(`MISSING_REQUIRED_FIELD:${path}`);\n  }\n}\n\nreturn [{ json: $json }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        272,
+        -176
+      ],
+      "id": "a6cb101f-8f4f-41d3-97a9-8494bc48059f",
+      "name": "Enforce structural integrity"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select\n  d.org_id,\n  d.id as document_id,\n  o.raw_text,\n  o.ocr_confidence\nfrom tc_documents d\njoin tc_doc_ocr_runs o\n  on o.document_id = d.id\nwhere d.id = $1\n  and d.org_id = $2\norder by o.created_at desc\nlimit 1;\n",
+        "options": {
+          "queryReplacement": "={{ $json.context.document_id }},\n{{ $json.context.org_id }}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        496,
+        -176
+      ],
+      "id": "c2e63d77-0621-4ba9-bb87-863a92d9a1d0",
+      "name": "Load Latest OCR Result",
+      "credentials": {
+        "postgres": {
+          "id": "cqBasy3ZTP80O0WH",
+          "name": "TC Contracting SupaB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Extract the expense fields from this OCR text.\n\nReturn JSON with exactly these keys:\nvendor_name, expense_date, total_amount, tax_amount, currency\n\nOCR TEXT:\n{{ $json.raw_text }}",
+        "options": {
+          "systemMessage": "You extract expense fields from OCR text.\nOutput must be VALID JSON only. No markdown. No commentary.\nIf a field is unknown, use null.\nDate must be YYYY-MM-DD.\nAmounts must be numbers (no currency symbols).\nCurrency must be a 3-letter code or \"USD\" if unknown."
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        944,
+        -176
+      ],
+      "id": "d0d09e2c-4dd0-4aae-a913-a8d0f85b3844",
+      "name": "OCR Extraction Agent",
+      "retryOnFail": true,
+      "maxTries": 2
+    }
+  ],
+  "pinData": {
+    "When Executed by \"Doc_OCR_Pipeline_v1_W2\"": [
+      {
+        "json": {
+          "context": {
+            "org_id": "11111111-1111-1111-1111-111111111111",
+            "document_id": "5a5fbabb-9346-4cdb-9335-a05210dae36a",
+            "actor": "system",
+            "source_workflow": "Doc_OCR_Pipeline_v1_W2",
+            "project_id": "bbd55738-449f-47bb-9fef-e8771d5b37e4",
+            "client_id": "4744a0f9-f743-4b88-b61a-39d436dc7e30"
+          },
+          "document": {
+            "document_id": "5a5fbabb-9346-4cdb-9335-a05210dae36a",
+            "file_path": "org_11111111-1111-1111-1111-111111111111/documents/5a5fbabb-9346-4cdb-9335-a05210dae36a/original.jpeg",
+            "file_hash": "c6827e7c68f8bf2bff25a35fe87d555e50f6eb386128049a157ce805ac3b07a5",
+            "status": "PROCESSING"
+          },
+          "ocr": {
+            "raw_text": {
+              "vendor_name": "Bobby Q\n1610 S. Stapley Drive\nMesa, AZ, 85204",
+              "total_amount": 192.45,
+              "tax_amount": 15.97,
+              "expense_date": "2023-11-26",
+              "currency": "USD",
+              "confidence_score": 0.9,
+              "needs_review": false
+            },
+            "ocr_confidence": 0.9
+          },
+          "metadata": {
+            "timestamp": "2026-02-04T18:02:11.012Z",
+            "ocr_run_id": "optional"
+          }
+        },
+        "pairedItem": {
+          "item": 0
+        }
+      }
+    ]
+  },
+  "connections": {
+    "OpenAI Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "OCR Extraction Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Extracted JSON": {
+      "main": [
+        [
+          {
+            "node": "Score Confidence",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Score Confidence": {
+      "main": [
+        [
+          {
+            "node": "Normalize Expense Values",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert audit event (system)": {
+      "main": [
+        [
+          {
+            "node": "Return Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify Values": {
+      "main": [
+        [
+          {
+            "node": "OCR Extraction Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Expense Values": {
+      "main": [
+        [
+          {
+            "node": "Insert Expense into tc_expense_record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert Expense into tc_expense_record": {
+      "main": [
+        [
+          {
+            "node": "Insert audit event (system)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "When Executed by \"Doc_OCR_Pipeline_v1_W2\"": {
+      "main": [
+        [
+          {
+            "node": "Enforce structural integrity",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enforce structural integrity": {
+      "main": [
+        [
+          {
+            "node": "Load Latest OCR Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Latest OCR Result": {
+      "main": [
+        [
+          {
+            "node": "Verify Values",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OCR Extraction Agent": {
+      "main": [
+        [
+          {
+            "node": "Validate Extracted JSON",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "2ad09c10-6e5e-47c9-814e-02e10b480a7a",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "91c7bbe549e6b1ce176a6cba870e18b1a9397b8b96abba762c4236f7d060db36"
+  },
+  "id": "lvuN5heeler_2vp_b9FBh",
+  "tags": []
+}

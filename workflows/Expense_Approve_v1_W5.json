@@ -1,0 +1,237 @@
+{
+  "name": "Expense_Approve_v1_W5",
+  "nodes": [
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "insert into public.tc_audit_events\n  (org_id, actor, entity_type, entity_id, action, before_state, after_state)\nvalues\n  ($1, $2, 'expense_record', $3, $4, $5::jsonb, $6::jsonb);\n",
+        "options": {
+          "queryReplacement": "={{ $('Enforce structural integrity').item.json.context.org_id }},\n{{ $('Enforce structural integrity').item.json.decision.actor }},\n{{ $('Enforce structural integrity').item.json.context.expense_record_id }},\n{{ $('Enforce structural integrity').item.json.decision.action }},\n{{ JSON.stringify($('Select Current Expense Record from tc_expense_records').item.json) }},\n{{ JSON.stringify({\n  ...$('Update Expense Record status in tc_expense_records').item.json,\n  notes: $('Enforce structural integrity').item.json.decision.notes\n}) }}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        256,
+        -240
+      ],
+      "id": "94eb626e-6f10-4d50-adb4-b6083686b19f",
+      "name": "Insert Audit Event",
+      "credentials": {
+        "postgres": {
+          "id": "cqBasy3ZTP80O0WH",
+          "name": "TC Contracting SupaB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"ok\": true,\n  \"expense_record_id\": \"{{ $('Approval webhook').item.json.body.context.expense_record_id }}\",\n  \"decision\": \"{{ $('Approval webhook').item.json.body.decision.action }}\",\n  \"status\": \"{{ $('Update Expense Record status in tc_expense_records').item.json.status }}\",\n  \"updated_at\": \"{{ $('Update Expense Record status in tc_expense_records').item.json.updated_at }}\"\n}\n",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        480,
+        -240
+      ],
+      "id": "04624b81-1b4c-48fa-8055-3ec0f712f746",
+      "name": "Respond to Webhook"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "expense-docs/approve",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -640,
+        -240
+      ],
+      "id": "a8c85052-1f10-4490-8e22-19be0691d923",
+      "name": "Approval webhook",
+      "webhookId": "fc4bb304-647c-4b9a-a372-e0ff8f243b99"
+    },
+    {
+      "parameters": {
+        "jsCode": "const incoming = $json.body;\n\n// Debug logging - remove after testing\nconsole.log('Incoming data structure:', JSON.stringify(incoming, null, 2));\n\n// Validate nested input structure\nif (!incoming.context?.org_id) {\n  throw new Error('MISSING_REQUIRED_FIELD:org_id');\n}\nif (!incoming.context?.expense_record_id) {\n  throw new Error('MISSING_REQUIRED_FIELD:expense_record_id');\n}\nif (!incoming.decision?.action) {\n  throw new Error('MISSING_REQUIRED_FIELD:decision');\n}\n\nconst allowed = ['APPROVED', 'REJECTED', 'approved', 'rejected', 'approve', 'reject'];\nconst decision = incoming.decision.action.toUpperCase();\n\nif (!allowed.map(d => d.toUpperCase()).includes(decision)) {\n  throw new Error(`INVALID_DECISION:${incoming.decision.action}`);\n}\n\n// Normalize to canonical nested contract\nconst payload = {\n  context: {\n    org_id: incoming.context.org_id,\n    expense_record_id: incoming.context.expense_record_id\n  },\n  decision: {\n    action: decision === 'REJECT' ? 'REJECTED' : 'APPROVED', // Normalize action\n    actor: 'system',\n    notes: null\n  }\n};\n\nreturn [{ json: payload }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -416,
+        -240
+      ],
+      "id": "cc24bbcc-f251-47a7-9e2a-8e1b802496e6",
+      "name": "Enforce structural integrity"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select\n  id,\n  org_id,\n  document_id,\n  vendor_name,\n  expense_date,\n  total_amount,\n  tax_amount,\n  currency,\n  confidence_score,\n  needs_review,\n  status,\n  created_at,\n  updated_at\nfrom public.tc_expense_records\nwhere org_id = $1\n  and id = $2;\n",
+        "options": {
+          "queryReplacement": "={{ $json.context.org_id }}, {{ $json.context.expense_record_id }}\n\n"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -192,
+        -240
+      ],
+      "id": "1c91bba1-5a6a-4161-9b32-aa9d864196a3",
+      "name": "Select Current Expense Record from tc_expense_records",
+      "credentials": {
+        "postgres": {
+          "id": "cqBasy3ZTP80O0WH",
+          "name": "TC Contracting SupaB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "update public.tc_expense_records\nset\n  status = $3,\n  needs_review = case when $3 = 'APPROVED' then false else needs_review end,\n  updated_at = now()\nwhere org_id = $1\n  and id = $2\nreturning\n  id,\n  org_id,\n  status,\n  needs_review,\n  updated_at;\n",
+        "options": {
+          "queryReplacement": "={{ $json.org_id }},\n{{ $('Enforce structural integrity').item.json.context.expense_record_id }},\n{{ $('Enforce structural integrity').item.json.decision.action }},"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        32,
+        -240
+      ],
+      "id": "9fcb42c9-e41d-44e4-a807-325e5e04fb5b",
+      "name": "Update Expense Record status in tc_expense_records",
+      "credentials": {
+        "postgres": {
+          "id": "cqBasy3ZTP80O0WH",
+          "name": "TC Contracting SupaB"
+        }
+      }
+    }
+  ],
+  "pinData": {
+    "Approval webhook": [
+      {
+        "json": {
+          "headers": {
+            "host": "connorcareyai.app.n8n.cloud",
+            "user-agent": "node",
+            "content-length": "151",
+            "accept": "*/*",
+            "accept-encoding": "gzip, br",
+            "accept-language": "*",
+            "cdn-loop": "cloudflare; loops=1; subreqs=1",
+            "cf-connecting-ip": "2600:8800:1ea4:8400:5889:ac1c:f3e1:4493",
+            "cf-ew-via": "15",
+            "cf-ipcountry": "US",
+            "cf-ray": "9ce7612cff160527-PHX",
+            "cf-visitor": "{\"scheme\":\"https\"}",
+            "cf-worker": "n8n.cloud",
+            "content-type": "application/json",
+            "sec-fetch-mode": "cors",
+            "x-forwarded-for": "2600:8800:1ea4:8400:5889:ac1c:f3e1:4493, 104.23.195.55",
+            "x-forwarded-host": "connorcareyai.app.n8n.cloud",
+            "x-forwarded-port": "443",
+            "x-forwarded-proto": "https",
+            "x-forwarded-server": "traefik-prod-users-gwc-14-5654dfbc89-sq89q",
+            "x-is-trusted": "yes",
+            "x-real-ip": "2600:8800:1ea4:8400:5889:ac1c:f3e1:4493"
+          },
+          "params": {},
+          "query": {},
+          "body": {
+            "context": {
+              "org_id": "11111111-1111-1111-1111-111111111111",
+              "expense_record_id": "e73e0fba-314d-4d75-ab39-f12258cc2d09"
+            },
+            "decision": {
+              "action": "reject"
+            }
+          },
+          "webhookUrl": "https://connorcareyai.app.n8n.cloud/webhook/expense-docs/approve",
+          "executionMode": "production"
+        },
+        "pairedItem": {
+          "item": 0
+        }
+      }
+    ]
+  },
+  "connections": {
+    "Insert Audit Event": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Approval webhook": {
+      "main": [
+        [
+          {
+            "node": "Enforce structural integrity",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enforce structural integrity": {
+      "main": [
+        [
+          {
+            "node": "Select Current Expense Record from tc_expense_records",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Select Current Expense Record from tc_expense_records": {
+      "main": [
+        [
+          {
+            "node": "Update Expense Record status in tc_expense_records",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Expense Record status in tc_expense_records": {
+      "main": [
+        [
+          {
+            "node": "Insert Audit Event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "b60be212-60d6-4ea6-b150-1ca772dbf49a",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "91c7bbe549e6b1ce176a6cba870e18b1a9397b8b96abba762c4236f7d060db36"
+  },
+  "id": "LpPWI2Pq4luoMIcXClHWG",
+  "tags": []
+}
