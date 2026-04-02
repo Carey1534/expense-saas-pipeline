@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { Expense, Project } from '@/lib/types';
+import { Expense, ExpenseStatus, Project } from '@/lib/types';
 import StatusBadge from '@/components/StatusBadge';
 import DropZone from '@/components/DropZone';
 import ExportButton from '@/components/ExportButton';
@@ -599,11 +599,11 @@ export default function ProjectExpensesPage() {
         if (res.ok) { successCount++; }
         else {
           failCount++;
-          setExpenses(prev => prev.map(x => x.id === expense.id ? { ...x, status: previousStatuses[expense.id] as any } : x));
+          setExpenses(prev => prev.map(x => x.id === expense.id ? { ...x, status: previousStatuses[expense.id] as ExpenseStatus } : x));
         }
       } catch {
         failCount++;
-        setExpenses(prev => prev.map(x => x.id === expense.id ? { ...x, status: previousStatuses[expense.id] as any } : x));
+        setExpenses(prev => prev.map(x => x.id === expense.id ? { ...x, status: previousStatuses[expense.id] as ExpenseStatus } : x));
       }
     }));
 

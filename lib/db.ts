@@ -81,7 +81,7 @@ export async function getExpensesByProject(projectId: string) {
       const docMap = new Map(documents.map(d => [d.id, d]));
       for (const expense of expenses) {
         if (expense.document_id && docMap.has(expense.document_id)) {
-          (expense as any).document = docMap.get(expense.document_id);
+          (expense as Record<string, unknown>).document = docMap.get(expense.document_id);
         }
       }
     }
@@ -134,7 +134,7 @@ export async function getExpenses() {
       const docMap = new Map(documents.map(d => [d.id, d]));
       for (const expense of expenses) {
         if (expense.document_id && docMap.has(expense.document_id)) {
-          (expense as any).document = docMap.get(expense.document_id);
+          (expense as Record<string, unknown>).document = docMap.get(expense.document_id);
         }
       }
     }
@@ -201,7 +201,7 @@ export async function getExpenseById(id: string) {
       .maybeSingle();
 
     if (document) {
-      (expense as any).document = document;
+      (expense as Record<string, unknown>).document = document;
     }
   }
 

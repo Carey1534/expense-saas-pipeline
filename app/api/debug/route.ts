@@ -7,7 +7,7 @@ export async function GET() {
     
     return NextResponse.json({
       count: expenses.length,
-      ids: expenses.map((e: any) => ({ id: e.id, vendor: e.vendor_name })),
+      ids: expenses.map((e) => ({ id: e.id, vendor: e.vendor_name })),
       first_expense: expenses[0],
     });
   } catch (error) {
