@@ -23,14 +23,11 @@ export default function ThemeProvider({ children }: { children: React.ReactNode 
   const [mounted, setMounted] = useState(false);
 
   // On mount, read from localStorage or system preference
-  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => {
     const stored = localStorage.getItem('tc-theme') as Theme | null;
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (stored === 'dark' || stored === 'light') {
       setTheme(stored);
     } else if (window.matchMedia('(prefers-color-scheme: dark)').matches) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
       setTheme('dark');
     }
     setMounted(true);
